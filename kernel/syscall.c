@@ -102,6 +102,13 @@ extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
 
+// Add these function declarations after the existing extern declarations
+extern uint64 sys_setscheduler(void);
+extern uint64 sys_getscheduler(void);
+extern uint64 sys_setpriority(void);
+extern uint64 sys_getpriority(void);
+extern uint64 sys_schedstats(void);
+
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
 static uint64 (*syscalls[])(void) = {
@@ -126,6 +133,11 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_setscheduler] sys_setscheduler,
+[SYS_getscheduler] sys_getscheduler,
+[SYS_setpriority]  sys_setpriority,
+[SYS_getpriority]  sys_getpriority,
+[SYS_schedstats]   sys_schedstats,
 };
 
 void

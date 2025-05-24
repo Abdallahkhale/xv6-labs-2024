@@ -26,6 +26,33 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+// Add this after the existing includes and before any functions
+struct scheduler_config sched_config = {
+    .current_policy = SCHED_RR,
+    .time_quantum = DEFAULT_TIME_QUANTUM,
+    .enable_preemption = 1,
+    .mlfq_time_quantum = {5, 10, 20},
+    .mlfq_boost_interval = 100,
+    .total_context_switches = 0,
+    .scheduler_calls = 0
+};
+struct proc* find_proc(int pid) {
+    struct proc *p;
+    for(p = proc; p < &proc[NPROC]; p++) {
+        if(p->pid == pid) {
+            return p;
+        }
+    }
+    return 0;
+}
+
+// Policy name helper
+char* policy_name(int policy) {
+    char* names[] = {"Round Robin", "FCFS", "SJF", "Priority", "MLFQ"};
+    if(policy >= 0 && policy <= 4) return names[policy];
+    return "Unknown";
+}
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -124,6 +151,20 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  // In allocproc(), after "p->state = USED;" add these lines:
+  p->priority = DEFAULT_PRIORITY;
+  p->nice = 0;
+  p->burst_time = DEFAULT_BURST_TIME;
+  p->arrival_time = ticks;
+  p->wait_time = 0;
+  p->turnaround_time = 0;
+  p->response_time = 0;
+  p->last_run = 0;
+  p->time_slice = sched_config.time_quantum;
+  p->queue_level = 0;
+  p->feedback_counter = 0;
+  p->total_runtime = 0;
+  p->context_switches = 0;
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
@@ -433,6 +474,96 @@ wait(uint64 addr)
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
 }
+// Round Robin Scheduler
+struct proc* schedule_round_robin(void) {
+    struct proc *p;
+    static struct proc *last = 0;
+    
+    // Start searching from after the last scheduled process
+    if(last) {
+        p = last + 1;
+        if(p >= &proc[NPROC]) p = proc;
+    } else {
+        p = proc;
+    }
+    
+    struct proc *start = p;
+    do {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+            last = p;
+            return p; // Return with lock held
+        }
+        release(&p->lock);
+        
+        p++;
+        if(p >= &proc[NPROC]) p = proc;
+    } while(p != start);
+    
+    last = 0;
+    return 0;
+}
+
+// First Come First Serve
+struct proc* schedule_fcfs(void) {
+    struct proc *p, *earliest = 0;
+    uint64 earliest_arrival = -1;
+    
+    for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+            if(!earliest || p->arrival_time < earliest_arrival) {
+                if(earliest) release(&earliest->lock);
+                earliest = p;
+                earliest_arrival = p->arrival_time;
+            } else {
+                release(&p->lock);
+            }
+        } else {
+            release(&p->lock);
+        }
+    }
+    
+    return earliest; // Return with lock held if found
+}
+
+// Priority Scheduler
+struct proc* schedule_priority(void) {
+    struct proc *p, *highest = 0;
+    int highest_priority = 32; // Lower number = higher priority
+    
+    for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+            int effective_priority = p->priority + p->nice;
+            if(!highest || effective_priority < highest_priority) {
+                if(highest) release(&highest->lock);
+                highest = p;
+                highest_priority = effective_priority;
+            } else {
+                release(&p->lock);
+            }
+        } else {
+            release(&p->lock);
+        }
+    }
+    
+    return highest; // Return with lock held if found
+}
+
+// Process selection logic
+struct proc* schedule_next_process(void) {
+    switch(sched_config.current_policy) {
+        case SCHED_RR:
+            return schedule_round_robin();
+        case SCHED_FCFS:
+            return schedule_fcfs();
+        case SCHED_PRIORITY:
+            return schedule_priority();
+        default:
+            return schedule_round_robin();
+    }
+}
 
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
@@ -441,43 +572,47 @@ wait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
-void
-scheduler(void)
-{
-  struct proc *p;
-  struct cpu *c = mycpu();
-
-  c->proc = 0;
-  for(;;){
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting.
-    intr_on();
-
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
-      }
-      release(&p->lock);
+// Replace the entire scheduler() function with this version
+void scheduler(void) {
+    struct proc *p;
+    struct cpu *c = mycpu();
+    
+    c->proc = 0;
+    for(;;) {
+        intr_on();
+        
+        // Select next process based on current policy
+        p = schedule_next_process();
+        
+        if(p) {
+            // Statistics update
+            sched_config.scheduler_calls++;
+            p->context_switches++;
+            sched_config.total_context_switches++;
+            
+            // Update timing information
+            p->last_run = ticks;
+            if(p->response_time == 0 && p->state == RUNNABLE) {
+                p->response_time = ticks - p->arrival_time;
+            }
+            
+            // Process is already locked from schedule_next_process()
+            if(p->state == RUNNABLE) {
+                p->state = RUNNING;
+                c->proc = p;
+                swtch(&c->context, &p->context);
+                
+                // Process is running; we'll continue here when it yields
+                c->proc = 0;
+                
+                // Update statistics after context switch
+                if(p->last_run > 0) {
+                    p->total_runtime += (ticks - p->last_run);
+                }
+            }
+            release(&p->lock);
+        }
     }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
-      intr_on();
-      asm volatile("wfi");
-    }
-  }
 }
 
 // Switch to scheduler.  Must hold only p->lock
@@ -692,4 +827,87 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+// System call implementations - add these at the end of proc.c
+
+uint64 sys_setscheduler(void) {
+    int policy;
+    argint(0, &policy);
+    
+    if(policy < 0 || policy > 4)
+        return -1;
+    
+    sched_config.current_policy = policy;
+    printf("Scheduler policy changed to: %s\n", policy_name(policy));
+    return 0;
+}
+
+uint64 sys_getscheduler(void) {
+    return sched_config.current_policy;
+}
+
+
+uint64 sys_setpriority(void) {
+    int pid, priority;
+    argint(0, &pid);
+    argint(1, &priority);
+    
+    if(priority < 0 || priority > 31)
+        return -1;
+    
+    struct proc *p = find_proc(pid);
+    if(p) {
+        acquire(&p->lock);
+        p->priority = priority;
+        release(&p->lock);
+        return 0;
+    }
+    return -1;
+}
+
+uint64 sys_getpriority(void) {
+    int pid;
+    argint(0, &pid);
+    
+    struct proc *p = find_proc(pid);
+    if(p) {
+        acquire(&p->lock);
+        int prio = p->priority;
+        release(&p->lock);
+        return prio;
+    }
+    return -1;
+}
+
+uint64 sys_schedstats(void) {
+    uint64 addr;
+    argaddr(0, &addr);
+    
+    struct schedstats stats;
+    stats.total_processes = 0;
+    stats.active_processes = 0;
+    stats.runnable_processes = 0;
+    stats.total_context_switches = sched_config.total_context_switches;
+    stats.scheduler_calls = sched_config.scheduler_calls;
+    stats.current_policy = sched_config.current_policy;
+    stats.avg_wait_time = 0;
+    stats.avg_turnaround_time = 0;
+    stats.avg_response_time = 0;
+    
+    // Collect process statistics
+    struct proc *p;
+    for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state != UNUSED) {
+            stats.total_processes++;
+            if(p->state == RUNNABLE) stats.runnable_processes++;
+            if(p->state == RUNNING) stats.active_processes++;
+        }
+        release(&p->lock);
+    }
+    
+    if(copyout(myproc()->pagetable, addr, (char*)&stats, sizeof(stats)) < 0)
+        return -1;
+    
+    return 0;
 }

@@ -1,5 +1,18 @@
 struct stat;
 
+// Define schedstats structure BEFORE function declarations
+struct schedstats {
+    uint64 total_processes;
+    uint64 total_context_switches;
+    uint64 scheduler_calls;
+    int active_processes;
+    int runnable_processes;
+    int current_policy;  // Note: changed from enum to int for user space
+    uint64 avg_wait_time;
+    uint64 avg_turnaround_time;
+    uint64 avg_response_time;
+};
+
 // system calls
 int fork(void);
 int exit(int) __attribute__((noreturn));
@@ -22,6 +35,13 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
+
+// Scheduler system calls
+int setscheduler(int);
+int getscheduler(void);
+int setpriority(int, int);
+int getpriority(int);
+int schedstats(struct schedstats*);
 
 // ulib.c
 int stat(const char*, struct stat*);

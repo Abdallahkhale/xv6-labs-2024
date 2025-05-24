@@ -20,3 +20,10 @@
 #define SYS_link   19
 #define SYS_mkdir  20
 #define SYS_close  21
+
+// Add these lines at the end of the existing #define list
+#define SYS_setscheduler 22
+#define SYS_getscheduler 23
+#define SYS_setpriority  24
+#define SYS_getpriority  25
+#define SYS_schedstats   26

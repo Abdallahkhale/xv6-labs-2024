@@ -36,3 +36,9 @@ entry("getpid");
 entry("sbrk");
 entry("sleep");
 entry("uptime");
+# Add these lines to the end of the file
+entry("setscheduler");
+entry("getscheduler");
+entry("setpriority");
+entry("getpriority");
+entry("schedstats");
